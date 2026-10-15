@@ -31,7 +31,6 @@ const Enums = imports.enums;
 const DBusUtils = imports.dbusUtils;
 
 const ByteArray = imports.byteArray;
-const Mainloop = imports.mainloop;
 const Signals = imports.signals;
 const Gettext = imports.gettext.domain('desktopicons-neo');
 
@@ -192,7 +191,7 @@ var FileItem = class {
                         if (this._queryTrashInfoCancellable || this._scheduleTrashRefreshId) {
                             if (this._scheduleTrashRefreshId)
                                 GLib.source_remove(this._scheduleTrashRefreshId);
-                            this._scheduleTrashRefreshId = Mainloop.timeout_add(200, () => this._refreshTrashIcon());
+                            this._scheduleTrashRefreshId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 200, () => this._refreshTrashIcon());
                         } else {
                             this._refreshTrashIcon();
                         }
@@ -554,7 +553,7 @@ var FileItem = class {
         let icon_set = false;
 
         let thumbnailFactory = GnomeDesktop.DesktopThumbnailFactory.new(GnomeDesktop.DesktopThumbnailSize.LARGE);
-        if ((Prefs.nautilusSettings.get_string('show-image-thumbnails') != 'never') &&
+        if ((Prefs.getNautilusString('show-image-thumbnails', 'local-only') != 'never') &&
             (thumbnailFactory.can_thumbnail(this._file.get_uri(),
                                             this._attributeContentType,
                                             this._modifiedTime))) {
@@ -968,7 +967,7 @@ var FileItem = class {
             this._actionTrash = new Gtk.MenuItem({label:_('Move to Trash')});
             this._actionTrash.connect('activate', () => {this._desktopManager.doTrash();});
             this._menu.add(this._actionTrash);
-            if (Prefs.nautilusSettings.get_boolean('show-delete-permanently')) {
+            if (Prefs.getNautilusBoolean('show-delete-permanently', false)) {
                 this._actionDelete = new Gtk.MenuItem({label:_('Delete permanently')});
                 this._actionDelete.connect('activate', () => {this._desktopManager.doDeletePermanently();});
                 this._menu.add(this._actionDelete);

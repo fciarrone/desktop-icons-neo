@@ -266,18 +266,34 @@ function init() {
     );
 
   NautilusFileOperations2Proxy.platformData = params => {
-    const inShell = typeof global !== 'undefined';
+    // This code always runs in the desktop (Gtk3 standalone) process, never
+    // inside gnome-shell, so use the Gtk event time. Be defensive: there may
+    // be no current event (e.g. triggered from a timeout), in which case
+    // Gtk.get_current_event() returns null on recent GJS.
+    let timestamp = 0;
+    let parentWindow = null;
+    try {
+        const Gtk3 = imports.gi.Gtk;
+        if (typeof Gtk3.get_current_event_time === 'function')
+            timestamp = Gtk3.get_current_event_time();
+        if (typeof Gtk3.get_current_event === 'function') {
+            const event = Gtk3.get_current_event();
+            if (event)
+                parentWindow = event.get_window();
+        }
+    } catch (e) {
+    }
     const defaultParams = {
-      timestamp: inShell ? global.get_current_time() :
-        imports.gi.Gtk.get_current_event_time(),
-      parentWindow: inShell ? null :
-        imports.gi.Gtk.get_current_event().get_window(),
+      timestamp: timestamp,
+      parentWindow: parentWindow,
       windowPosition: 'center',
     };
-    const { parentWindow, timestamp, windowPosition } = {
+    const { parentWindow: _pw, timestamp: _ts, windowPosition } = {
       ...defaultParams,
       ...params,
     };
+    const _parentWindow = _pw;
+    const _timestamp = _ts;
     
     //Get rid of ?? that would error out old GNOME versions
     let { parentHandle } = { parentHandle: '' };
@@ -285,11 +301,11 @@ function init() {
         parentHandle = params;
     }
 
-    if (!parentHandle && parentWindow) {
+    if (!parentHandle && _parentWindow) {
       try {
         imports.gi.versions.GdkX11 = '3.0';
         const { GdkX11 } = imports.gi;
-        const topLevel = parentWindow.get_effective_toplevel();
+        const topLevel = _parentWindow.get_effective_toplevel();
 
         if (topLevel.constructor.$gtype === GdkX11.X11Window.$gtype) {
           const xid = GdkX11.X11Window.prototype.get_xid.call(topLevel);
@@ -306,7 +322,7 @@ function init() {
 
     return {
       'parent-handle': new GLib.Variant('s', parentHandle),
-      'timestamp': new GLib.Variant('u', timestamp),
+      'timestamp': new GLib.Variant('u', _timestamp),
       'window-position': new GLib.Variant('s', windowPosition),
     };
   }

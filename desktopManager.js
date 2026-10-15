@@ -36,16 +36,27 @@ const Gettext = imports.gettext.domain('desktopicons-neo');
 
 const _ = Gettext.gettext;
 
+/* Minimum pointer travel, in pixels, before a button press turns into a
+ * rubberband selection. Plain clicks (press + release with only sub-pixel
+ * jitter) must not paint anything: painting a ~0-size rectangle and then
+ * clearing it on release produces a visible flick, compounded by the
+ * fullscreen queue_draw() on every desktop plus the focus/backdrop restyle
+ * that happens when the click moves focus from an app window to the desktop.
+ */
+var RUBBERBAND_THRESHOLD_PX = 3;
+
 var DesktopManager = class {
     constructor(desktopList, codePath, asDesktop, primaryIndex) {
 
         DBusUtils.init();
         this._premultiplied = false;
         try {
-            for (let f of Prefs.mutterSettings.get_strv('experimental-features')) {
-                if (f == 'scale-monitor-framebuffer') {
-                    this._premultiplied = true;
-                    break;
+            if (Prefs.mutterSettings) {
+                for (let f of Prefs.mutterSettings.get_strv('experimental-features')) {
+                    if (f == 'scale-monitor-framebuffer') {
+                        this._premultiplied = true;
+                        break;
+                    }
                 }
             }
         } catch(e) {
@@ -80,13 +91,21 @@ var DesktopManager = class {
         this._monitorScriptDir = this._scriptsDir.monitor_directory(Gio.FileMonitorFlags.WATCH_MOVES, null);
         this._monitorScriptDir.set_rate_limit(1000);
         this._monitorScriptDir.connect('changed', (obj, file, otherFile, eventType) => this._updateScriptFileList());
-        this._showHidden = Prefs.gtkSettings.get_boolean('show-hidden');
+        this._showHidden = Prefs.getGtkBoolean('show-hidden', false);
         this._curvedCorners = Prefs.desktopSettings.get_boolean('curved-corners');
         this.showDropPlace = Prefs.desktopSettings.get_boolean('show-drop-place');
         this._settingsId = Prefs.desktopSettings.connect('changed', (obj, key) => {
-            if (key == 'icon-size') {
+            if ((key == 'icon-size') ||
+                (key == 'spacing-horizontal') ||
+                (key == 'spacing-vertical') ||
+                (key == 'margin-top') ||
+                (key == 'margin-bottom') ||
+                (key == 'margin-left') ||
+                (key == 'margin-right')) {
                 this._removeAllFilesFromGrids();
                 this._createGrids();
+                this._updateDesktop();
+                return;
             }
             if (key == Enums.SortOrder.ORDER) {
                 this.doArrangeRadioButtons();
@@ -96,26 +115,33 @@ var DesktopManager = class {
             this.showDropPlace = Prefs.desktopSettings.get_boolean('show-drop-place');
             this._updateDesktop();
         });
-        Prefs.gtkSettings.connect('changed', (obj, key) => {
-            if (key == 'show-hidden') {
-                this._showHidden = Prefs.gtkSettings.get_boolean('show-hidden');
-                this._updateDesktop();
-            }
-        });
+        if (Prefs.gtkSettings) {
+            Prefs.gtkSettings.connect('changed', (obj, key) => {
+                if (key == 'show-hidden') {
+                    this._showHidden = Prefs.getGtkBoolean('show-hidden', false);
+                    this._updateDesktop();
+                }
+            });
+        }
         Prefs.desktopSettings.connect('changed', (obj, key) => {
             if (key == 'curved-corners') {
                 this._curvedCorners = Prefs.desktopSettings.get_boolean('curved-corners');
                 this._updateDesktop();
             }
         });
-        Prefs.nautilusSettings.connect('changed', (obj, key) => {
-            if (key == 'show-image-thumbnails') {
-                this._updateDesktop();
+        if (Prefs.nautilusSettings) {
+            try {
+                Prefs.nautilusSettings.connect('changed', (obj, key) => {
+                    if (key == 'show-image-thumbnails') {
+                        this._updateDesktop();
+                    }
+                });
+            } catch (e) {
             }
-        });
-        Prefs.gtkSettings.connect('changed', (obj, key) => {
+        }
+        Prefs.desktopSettings.connect('changed', (obj, key) => {
             if (key == 'desktop-directory') {
-                this._desktopDir = Prefs.gtkSettings.get_string('desktop-directory');
+                this._desktopDir = DesktopIconsUtil.getDesktopDir();
                 this._updateDesktop();
             }
         });
@@ -128,6 +154,8 @@ var DesktopManager = class {
         this._volumeMonitor.connect('mount-removed', () => { this._updateDesktop() });
 
         this.rubberBand = false;
+        this._rubberbandArmed = false;
+        this._lastRubberRect = null;
 
         let cssProvider = new Gtk.CssProvider();
         cssProvider.load_from_file(Gio.File.new_for_path(GLib.build_filenamev([codePath, "stylesheet.css"])));
@@ -599,7 +627,15 @@ var DesktopManager = class {
             this._updateDesktop();
             return true;
         } else if (isCtrl && ((symbol == Gdk.KEY_H) || (symbol == Gdk.KEY_h))) {
-            Prefs.gtkSettings.set_boolean('show-hidden', !this._showHidden);
+            try {
+                if (Prefs.gtkSettings && Prefs.hasGtkKey('show-hidden'))
+                    Prefs.gtkSettings.set_boolean('show-hidden', !this._showHidden);
+                else {
+                    this._showHidden = !this._showHidden;
+                    this._updateDesktop();
+                }
+            } catch (e) {
+            }
             return true;
         }
         return false;
@@ -771,13 +807,37 @@ var DesktopManager = class {
     }
 
     onMotion(x, y) {
+        if (this._rubberbandArmed && !this.rubberBand) {
+            // Button is held but the pointer hasn't travelled enough yet:
+            // keep the rubberband inactive so nothing is painted for plain
+            // clicks (press + release with only jitter).
+            let dx = x - this.rubberBandInitX;
+            let dy = y - this.rubberBandInitY;
+            if ((dx * dx + dy * dy) < (RUBBERBAND_THRESHOLD_PX * RUBBERBAND_THRESHOLD_PX)) {
+                return false;
+            }
+            this.rubberBand = true;
+        }
         if (this.rubberBand) {
+            let nx1 = Math.min(x, this.rubberBandInitX);
+            let nx2 = Math.max(x, this.rubberBandInitX);
+            let ny1 = Math.min(y, this.rubberBandInitY);
+            let ny2 = Math.max(y, this.rubberBandInitY);
+            if (this._lastRubberRect &&
+                this._lastRubberRect[0] === nx1 &&
+                this._lastRubberRect[1] === ny1 &&
+                this._lastRubberRect[2] === nx2 &&
+                this._lastRubberRect[3] === ny2) {
+                // Rectangle didn't change: repainting would only flicker.
+                return false;
+            }
+            this._lastRubberRect = [nx1, ny1, nx2, ny2];
             this.mouseX = x;
             this.mouseY = y;
-            this.x1 = Math.min(x, this.rubberBandInitX);
-            this.x2 = Math.max(x, this.rubberBandInitX);
-            this.y1 = Math.min(y, this.rubberBandInitY);
-            this.y2 = Math.max(y, this.rubberBandInitY);
+            this.x1 = nx1;
+            this.x2 = nx2;
+            this.y1 = ny1;
+            this.y2 = ny2;
             this.selectionRectangle = new Gdk.Rectangle({'x':this.x1, 'y':this.y1, 'width':(this.x2-this.x1), 'height':(this.y2-this.y1)});
             for(let grid of this._desktops) {
                 grid.queue_draw();
@@ -799,12 +859,21 @@ var DesktopManager = class {
     }
 
     onReleaseButton(grid) {
+        // Only repaint when something was actually painted: a plain click
+        // never activates the rubberband, so repainting every fullscreen
+        // desktop here would just produce a flick (worse when the click
+        // also moves keyboard focus from an app window to the desktop).
+        let needsRedraw = this.rubberBand || this.selectionRectangle !== null;
         if (this.rubberBand) {
             this.rubberBand = false;
             this.selectionRectangle = null;
         }
-        for(let grid of this._desktops) {
-            grid.queue_draw();
+        this._rubberbandArmed = false;
+        this._lastRubberRect = null;
+        if (needsRedraw) {
+            for(let grid of this._desktops) {
+                grid.queue_draw();
+            }
         }
         return false;
     }
@@ -812,7 +881,14 @@ var DesktopManager = class {
     _startRubberband(x, y) {
         this.rubberBandInitX = x;
         this.rubberBandInitY = y;
-        this.rubberBand = true;
+        this.mouseX = x;
+        this.mouseY = y;
+        // Armed, not active: activation happens in onMotion() once the
+        // pointer really moves, so simple clicks paint nothing.
+        this.rubberBand = false;
+        this._rubberbandArmed = true;
+        this._lastRubberRect = null;
+        this.selectionRectangle = null;
         for(let item of this._fileList) {
             item.touchedByRubberband = false;
         }
