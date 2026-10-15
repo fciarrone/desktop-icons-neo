@@ -189,11 +189,14 @@ function getFilesFromNautilusDnD(selection, type) {
 function isExecutable(mimetype, file_name) {
 
     if (Gio.content_type_can_be_executable(mimetype)) {
-        // Gnome Shell 40 removed this option
+        // Gnome 40+ removed this option from Nautilus; GNOME 46-50 may not
+        // have the key at all, so default to 'ask'.
+        var action = 'ask';
         try {
-            var action = Prefs.nautilusSettings.get_string('executable-text-activation');
+            if (Prefs.nautilusSettings)
+                action = Prefs.getNautilusString('executable-text-activation', 'ask');
         } catch(e) {
-            var action = 'ask';
+            action = 'ask';
         }
         switch (action) {
             default: // display

@@ -42,13 +42,20 @@ function init(path) {
     extensionPath = path;
     let schemaSource = GioSSS.get_default();
     let schemaGtk = schemaSource.lookup(Enums.SCHEMA_GTK, true);
-    gtkSettings = new Gio.Settings({ settings_schema: schemaGtk });
+    if (schemaGtk) {
+        gtkSettings = new Gio.Settings({ settings_schema: schemaGtk });
+    } else {
+        gtkSettings = null;
+    }
     let schemaObj = schemaSource.lookup(Enums.SCHEMA_NAUTILUS, true);
     if (!schemaObj) {
         nautilusSettings = null;
     } else {
         nautilusSettings = new Gio.Settings({ settings_schema: schemaObj });;
-        nautilusSettings.connect('changed', _onNautilusSettingsChanged);
+        try {
+            nautilusSettings.connect('changed', _onNautilusSettingsChanged);
+        } catch (e) {
+        }
         _onNautilusSettingsChanged();
     }
     desktopSettings = get_schema(Enums.SCHEMA);
@@ -84,13 +91,28 @@ function showPreferences() {
     if (this.window) {
         return;
     }
-    this.window = new Gtk.Window({ resizable: false,
-                                  window_position: Gtk.WindowPosition.CENTER });
+    this.window = new Gtk.Window({ resizable: true,
+                                   window_position: Gtk.WindowPosition.CENTER });
     this.window.connect('destroy', () => {this.window = null});
     this.window.set_title(_("Desktop Icons settings"));
+    // Cap the initial height so the dialog never grows taller than the
+    // screen; extra rows stay reachable through the scrollbar.
+    this.window.set_default_size(-1, 620);
     DesktopIconsUtil.windowHidePagerTaskbarModal(this.window, true);
+    let scrolled = new Gtk.ScrolledWindow({ hscrollbar_policy: Gtk.PolicyType.NEVER,
+                                            vscrollbar_policy: Gtk.PolicyType.AUTOMATIC });
+    try {
+        let screenHeight = this.window.get_screen().get_height();
+        if (screenHeight > 0) {
+            scrolled.set_max_content_height(Math.floor(screenHeight * 0.8));
+        }
+    } catch (e) {
+    }
+    this.window.add(scrolled);
+    let viewport = new Gtk.Viewport({ shadow_type: Gtk.ShadowType.NONE });
+    scrolled.add(viewport);
     let frame = new Gtk.Box({ orientation: Gtk.Orientation.VERTICAL });
-    this.window.add(frame);
+    viewport.add(frame);
     frame.set_spacing(10);
     frame.set_border_width(10);
 
@@ -124,6 +146,15 @@ function showPreferences() {
 
     frame.add(new Gtk.Separator({ orientation: Gtk.Orientation.HORIZONTAL }));
 
+    frame.add(buildSpinButton(desktopSettings, 'spacing-horizontal', _("Horizontal space between icons (px)"), 0, 40, 1));
+    frame.add(buildSpinButton(desktopSettings, 'spacing-vertical', _("Vertical space between icons (px)"), 0, 40, 1));
+    frame.add(buildSpinButton(desktopSettings, 'margin-top', _("Top screen margin (px)"), 0, 500, 1));
+    frame.add(buildSpinButton(desktopSettings, 'margin-bottom', _("Bottom screen margin (px)"), 0, 500, 1));
+    frame.add(buildSpinButton(desktopSettings, 'margin-left', _("Left screen margin (px)"), 0, 500, 1));
+    frame.add(buildSpinButton(desktopSettings, 'margin-right', _("Right screen margin (px)"), 0, 500, 1));
+
+    frame.add(new Gtk.Separator({ orientation: Gtk.Orientation.HORIZONTAL }));
+
     let nautilusFrame = new Gtk.Frame({ label: _("Settings shared with Nautilus"),
                                         shadow_type: Gtk.ShadowType.ETCHED_IN });
     let nautilusBox = new Gtk.Box({ orientation: Gtk.Orientation.VERTICAL, margin: 5, spacing: 10});
@@ -131,30 +162,44 @@ function showPreferences() {
     frame.add(nautilusFrame);
 
     nautilusBox.add(buildSelector(nautilusSettings, 'click-policy', _("Click type for open files"), { 'single': _("Single click"), 'double': _("Double click"), }));
-    nautilusBox.add(buildSwitcher(gtkSettings, 'show-hidden', _("Show hidden files")));
-    nautilusBox.add(buildSwitcher(nautilusSettings, 'show-delete-permanently', _("Show a context menu item to delete permanently")));
-    // Gnome Shell 40 removed this option
-    try {
-        nautilusBox.add(buildSelector(nautilusSettings,
-                                      'executable-text-activation',
-                                      _("Action to do when launching a program from the desktop"), {
-                                          'display': _("Display the content of the file"),
-                                          'launch': _("Launch the file"),
-                                          'ask': _("Ask what to do")
-                                       }));
-    } catch(e) {
+    if (gtkSettings && hasGtkKey('show-hidden'))
+        nautilusBox.add(buildSwitcher(gtkSettings, 'show-hidden', _("Show hidden files")));
+    if (hasNautilusKey('show-delete-permanently'))
+        nautilusBox.add(buildSwitcher(nautilusSettings, 'show-delete-permanently', _("Show a context menu item to delete permanently")));
+    // Removed in newer Nautilus/GNOME; only add if the key still exists
+    if (hasNautilusKey('executable-text-activation')) {
+        try {
+            nautilusBox.add(buildSelector(nautilusSettings,
+                                          'executable-text-activation',
+                                          _("Action to do when launching a program from the desktop"), {
+                                              'display': _("Display the content of the file"),
+                                              'launch': _("Launch the file"),
+                                              'ask': _("Ask what to do")
+                                           }));
+        } catch(e) {
+        }
     }
-    nautilusBox.add(buildSelector(nautilusSettings,
-                                  'show-image-thumbnails',
-                                  _("Show image thumbnails"), {
-                                      'never': _("Never"),
-                                      'local-only': _("Local files only"),
-                                      'always': _("Always")
-                                   }));
+    if (hasNautilusKey('show-image-thumbnails')) {
+        nautilusBox.add(buildSelector(nautilusSettings,
+                                      'show-image-thumbnails',
+                                      _("Show image thumbnails"), {
+                                          'never': _("Never"),
+                                          'local-only': _("Local files only"),
+                                          'always': _("Always")
+                                       }));
+    }
     this.window.show_all();
 }
 
 function buildSwitcher(settings, key, labelText) {
+    if (!settings)
+        return new Gtk.Box();
+    try {
+        if (settings.settings_schema && !settings.settings_schema.has_key(key))
+            return new Gtk.Box();
+    } catch (e) {
+        return new Gtk.Box();
+    }
     let hbox = new Gtk.Box({ orientation: Gtk.Orientation.HORIZONTAL, spacing: 10 });
     let label = new Gtk.Label({ label: labelText, xalign: 0 });
     let switcher = new Gtk.Switch({ active: settings.get_boolean(key) });
@@ -164,8 +209,33 @@ function buildSwitcher(settings, key, labelText) {
     return hbox;
 }
 
+function buildSpinButton(settings, key, labelText, min, max, step) {
+    if (!settings)
+        return new Gtk.Box();
+    try {
+        if (settings.settings_schema && !settings.settings_schema.has_key(key))
+            return new Gtk.Box();
+    } catch (e) {
+        return new Gtk.Box();
+    }
+    let hbox = new Gtk.Box({ orientation: Gtk.Orientation.HORIZONTAL, spacing: 10 });
+    let label = new Gtk.Label({ label: labelText, xalign: 0 });
+    let adjustment = new Gtk.Adjustment({ lower: min,
+                                          upper: max,
+                                          step_increment: step,
+                                          page_increment: step * 10 });
+    let spin = new Gtk.SpinButton({ adjustment: adjustment,
+                                    climb_rate: 1,
+                                    digits: 0,
+                                    numeric: true });
+    spin.set_value(settings.get_int(key));
+    settings.bind(key, spin, 'value', 3);
+    hbox.pack_start(label, true, true, 0);
+    hbox.add(spin);
+    return hbox;
+}
+
 function buildFileChooserButton(settings, key, labelText, buttonText) {
-    function activateFileChooser(){hbox.add(filechooser)}
     let hbox = new Gtk.Box({ orientation: Gtk.Orientation.HORIZONTAL, spacing: 10 });
     let label = new Gtk.Label({ label: labelText, xalign: 0 });
     let button = new Gtk.Button({ label: buttonText })
@@ -184,6 +254,14 @@ function buildFileChooserButton(settings, key, labelText, buttonText) {
 }
 
 function buildSelector(settings, key, labelText, elements) {
+    if (!settings)
+        return new Gtk.Box();
+    try {
+        if (settings.settings_schema && !settings.settings_schema.has_key(key))
+            return new Gtk.Box();
+    } catch (e) {
+        return new Gtk.Box();
+    }
     let listStore = new Gtk.ListStore();
     listStore.set_column_types ([GObject.TYPE_STRING, GObject.TYPE_STRING]);
     let schemaKey = settings.settings_schema.get_key(key);
@@ -209,7 +287,18 @@ function buildSelector(settings, key, labelText, elements) {
 }
 
 function _onNautilusSettingsChanged() {
-    CLICK_POLICY_SINGLE = nautilusSettings.get_string('click-policy') == 'single';
+    // Nautilus 43+ removed/renamed some keys; be defensive so the
+    // desktop process doesn't crash on GNOME 46-50.
+    try {
+        if (!nautilusSettings)
+            return;
+        const schema = nautilusSettings.settings_schema;
+        if (schema && !schema.has_key('click-policy'))
+            return;
+        CLICK_POLICY_SINGLE = nautilusSettings.get_string('click-policy') == 'single';
+    } catch (e) {
+        // keep default (double-click)
+    }
 }
 
 function get_icon_size() {
@@ -239,4 +328,77 @@ function setSortOrder(order) {
 
 function get_icon_shape() {
     return desktopSettings.get_string('icon-shape')
+}
+
+function getInt(key, fallback) {
+    try {
+        return desktopSettings.get_int(key);
+    } catch (e) {
+        return fallback;
+    }
+}
+
+function get_horizontal_spacing() {
+    return Math.max(0, Math.min(40, getInt('spacing-horizontal', 2)));
+}
+
+function get_vertical_spacing() {
+    return Math.max(0, Math.min(40, getInt('spacing-vertical', 2)));
+}
+
+function get_screen_margins() {
+    function getMargin(key, fallback) {
+        return Math.max(0, Math.min(500, getInt(key, fallback)));
+    }
+    return { top: getMargin('margin-top', 12),
+             bottom: getMargin('margin-bottom', 12),
+             left: getMargin('margin-left', 12),
+             right: getMargin('margin-right', 12) };
+}
+
+function hasNautilusKey(key) {
+    try {
+        if (!nautilusSettings)
+            return false;
+        return nautilusSettings.settings_schema.has_key(key);
+    } catch (e) {
+        return false;
+    }
+}
+
+function getNautilusBoolean(key, fallback) {
+    try {
+        if (hasNautilusKey(key))
+            return nautilusSettings.get_boolean(key);
+    } catch (e) {
+    }
+    return fallback;
+}
+
+function getNautilusString(key, fallback) {
+    try {
+        if (hasNautilusKey(key))
+            return nautilusSettings.get_string(key);
+    } catch (e) {
+    }
+    return fallback;
+}
+
+function hasGtkKey(key) {
+    try {
+        if (!gtkSettings)
+            return false;
+        return gtkSettings.settings_schema.has_key(key);
+    } catch (e) {
+        return false;
+    }
+}
+
+function getGtkBoolean(key, fallback) {
+    try {
+        if (hasGtkKey(key))
+            return gtkSettings.get_boolean(key);
+    } catch (e) {
+    }
+    return fallback;
 }

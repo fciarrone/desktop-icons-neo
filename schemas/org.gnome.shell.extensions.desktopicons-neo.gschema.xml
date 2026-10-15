@@ -87,6 +87,36 @@
         <summary>Shows a rectangle in the destination place during DnD</summary>
         <description>When doing a Drag'n'Drop operation, marks the place in the grid where the icon will be put with a semitransparent rectangle.</description>
     </key>
+    <key type="i" name="spacing-horizontal">
+        <default>2</default>
+        <summary>Horizontal space between icons</summary>
+        <description>Horizontal gap, in pixels, left around each desktop icon. Higher values spread icons further apart sideways.</description>
+    </key>
+    <key type="i" name="spacing-vertical">
+        <default>2</default>
+        <summary>Vertical space between icons</summary>
+        <description>Vertical gap, in pixels, left around each desktop icon. Higher values spread icons further apart vertically.</description>
+    </key>
+    <key type="i" name="margin-top">
+        <default>12</default>
+        <summary>Top screen margin</summary>
+        <description>Empty space, in pixels, kept between the top edge of the screen and the desktop icons.</description>
+    </key>
+    <key type="i" name="margin-bottom">
+        <default>12</default>
+        <summary>Bottom screen margin</summary>
+        <description>Empty space, in pixels, kept between the bottom edge of the screen and the desktop icons.</description>
+    </key>
+    <key type="i" name="margin-left">
+        <default>12</default>
+        <summary>Left screen margin</summary>
+        <description>Empty space, in pixels, kept between the left edge of the screen and the desktop icons.</description>
+    </key>
+    <key type="i" name="margin-right">
+        <default>12</default>
+        <summary>Right screen margin</summary>
+        <description>Empty space, in pixels, kept between the right edge of the screen and the desktop icons.</description>
+    </key>
     <key type="b" name="sort-special-folders">
         <default>false</default>
         <summary>Sort Special Folders - Home/Trash Drives.</summary>

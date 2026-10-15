@@ -30,7 +30,44 @@ const Gettext = imports.gettext.domain('desktopicons-neo');
 const _ = Gettext.gettext;
 
 
-var elementSpacing = 2;
+/* Spacing between icons and margins to the screen edges.
+ *
+ * These are read from GSettings (see the 'spacing-horizontal',
+ * 'spacing-vertical', 'margin-top', 'margin-bottom', 'margin-left' and
+ * 'margin-right' keys) so the user can tune the layout. Every access is
+ * wrapped in try/catch with a fallback so grids keep working even if the
+ * schemas on disk haven't been recompiled with the new keys yet.
+ */
+
+function getHSpacing() {
+    try {
+        return Math.max(0, Math.min(40, Prefs.desktopSettings.get_int('spacing-horizontal')));
+    } catch (e) {
+        return 2;
+    }
+}
+
+function getVSpacing() {
+    try {
+        return Math.max(0, Math.min(40, Prefs.desktopSettings.get_int('spacing-vertical')));
+    } catch (e) {
+        return 2;
+    }
+}
+
+function getMargins() {
+    function get(key, fallback) {
+        try {
+            return Math.max(0, Math.min(500, Prefs.desktopSettings.get_int(key)));
+        } catch (e) {
+            return fallback;
+        }
+    }
+    return { top: get('margin-top', 12),
+             bottom: get('margin-bottom', 12),
+             left: get('margin-left', 12),
+             right: get('margin-right', 12) };
+}
 
 var DesktopGrid = class {
 
@@ -57,10 +94,26 @@ var DesktopGrid = class {
         }
         this._width = Math.floor(desktopDescription.width / size_divisor);
         this._height = Math.floor(desktopDescription.height / size_divisor);
-        this._maxColumns = Math.floor(this._width / (Prefs.get_desired_width() + 4 * elementSpacing));
-        this._maxRows =  Math.floor(this._height / (Prefs.get_desired_height() + 4 * elementSpacing));
-        this._elementWidth = Math.floor(this._width / this._maxColumns);
-        this._elementHeight = Math.floor(this._height / this._maxRows);
+        this._hSpacing = getHSpacing();
+        this._vSpacing = getVSpacing();
+        let margins = getMargins();
+        // Shrink the margins if needed so that at least one icon cell fits
+        let minCellWidth = Prefs.get_desired_width() + 4 * this._hSpacing;
+        let minCellHeight = Prefs.get_desired_height() + 4 * this._vSpacing;
+        margins.left = Math.min(margins.left, Math.max(0, this._width - minCellWidth));
+        margins.right = Math.min(margins.right, Math.max(0, this._width - minCellWidth - margins.left));
+        margins.top = Math.min(margins.top, Math.max(0, this._height - minCellHeight));
+        margins.bottom = Math.min(margins.bottom, Math.max(0, this._height - minCellHeight - margins.top));
+        this._marginLeft = margins.left;
+        this._marginRight = margins.right;
+        this._marginTop = margins.top;
+        this._marginBottom = margins.bottom;
+        this._innerWidth = this._width - this._marginLeft - this._marginRight;
+        this._innerHeight = this._height - this._marginTop - this._marginBottom;
+        this._maxColumns = Math.max(1, Math.floor(this._innerWidth / (Prefs.get_desired_width() + 4 * this._hSpacing)));
+        this._maxRows =  Math.max(1, Math.floor(this._innerHeight / (Prefs.get_desired_height() + 4 * this._vSpacing)));
+        this._elementWidth = Math.floor(this._innerWidth / this._maxColumns);
+        this._elementHeight = Math.floor(this._innerHeight / this._maxRows);
 
         this._window = new Gtk.Window({"title": desktopName});
         if (asDesktop) {
@@ -158,6 +211,16 @@ var DesktopGrid = class {
         this._window.destroy();
     }
 
+    _snapLocalToCell(x, y) {
+        // Snaps container-local coordinates to the origin of the closest
+        // grid cell inside the margined (usable) area.
+        let ix = DesktopIconsUtil.clamp(Math.floor(x - this._marginLeft), 0, this._innerWidth - 1);
+        let iy = DesktopIconsUtil.clamp(Math.floor(y - this._marginTop), 0, this._innerHeight - 1);
+        ix = this._elementWidth * Math.floor(ix / this._elementWidth);
+        iy = this._elementHeight * Math.floor(iy / this._elementHeight);
+        return [ix + this._marginLeft, iy + this._marginTop];
+    }
+
     setDropDestination(dropDestination) {
         dropDestination.drag_dest_set(Gtk.DestDefaults.MOTION | Gtk.DestDefaults.DROP, null, Gdk.DragAction.MOVE);
         let targets = new Gtk.TargetList(null);
@@ -167,8 +230,7 @@ var DesktopGrid = class {
         targets.add(Gdk.atom_intern('text/plain', false), 0, 3);
         dropDestination.drag_dest_set_target_list(targets);
         dropDestination.connect('drag-motion', (widget, context, x, y, time) => {
-            x = this._elementWidth * Math.floor(x / this._elementWidth);
-            y = this._elementHeight * Math.floor(y / this._elementHeight);
+            [x, y] = this._snapLocalToCell(x, y);
             [x, y] = this._coordinatesLocalToGlobal(x, y);
             this._desktopManager.onDragMotion(x, y);
         });
@@ -176,8 +238,7 @@ var DesktopGrid = class {
             this._desktopManager.onDragLeave();
         });
         dropDestination.connect('drag-data-received', (widget, context, x, y, selection, info, time) => {
-            x = this._elementWidth * Math.floor(x / this._elementWidth);
-            y = this._elementHeight * Math.floor(y / this._elementHeight);
+            [x, y] = this._snapLocalToCell(x, y);
             [x, y] = this._coordinatesLocalToGlobal(x, y);
             this._desktopManager.onDragDataReceived(x, y, selection, info);
             this._window.queue_draw();
@@ -336,17 +397,17 @@ var DesktopGrid = class {
 
     _addFileItemTo(fileItem, column, row, coordinatesAction) {
 
-        let localX = Math.floor(this._width * column / this._maxColumns);
-        let localY = Math.floor(this._height * row / this._maxRows);
-        this._container.put(fileItem._container, localX + elementSpacing, localY + elementSpacing);
+        let localX = this._marginLeft + Math.floor(this._innerWidth * column / this._maxColumns);
+        let localY = this._marginTop + Math.floor(this._innerHeight * row / this._maxRows);
+        this._container.put(fileItem._container, localX + this._hSpacing, localY + this._vSpacing);
         this._setGridUse(column, row, true);
         this._fileItems[fileItem.uri] = [column, row, fileItem];
-        let [x, y] = this._coordinatesLocalToGlobal(localX + elementSpacing, localY + elementSpacing);
+        let [x, y] = this._coordinatesLocalToGlobal(localX + this._hSpacing, localY + this._vSpacing);
         fileItem.setCoordinates(x,
                                 y,
-                                this._elementWidth - 2 * elementSpacing,
-                                this._elementHeight - 2 * elementSpacing,
-                                elementSpacing,
+                                this._elementWidth - 2 * this._hSpacing,
+                                this._elementHeight - 2 * this._vSpacing,
+                                this._hSpacing,
                                 this._zoom,
                                 this);
         /* If this file is new in the Desktop and hasn't yet
@@ -389,8 +450,14 @@ var DesktopGrid = class {
     getGridAt(x, y, globalCoordinates) {
         if (this._coordinatesBelongToThisGrid(x, y)) {
             [x, y] = this._coordinatesGlobalToLocal(x, y);
-            x = this._elementWidth * Math.floor((x / this._elementWidth) + 0.5);
-            y = this._elementHeight * Math.floor((y / this._elementHeight) + 0.5);
+            let ix = DesktopIconsUtil.clamp(x - this._marginLeft, 0, this._innerWidth - 1);
+            let iy = DesktopIconsUtil.clamp(y - this._marginTop, 0, this._innerHeight - 1);
+            ix = this._elementWidth * Math.floor((ix / this._elementWidth) + 0.5);
+            iy = this._elementHeight * Math.floor((iy / this._elementHeight) + 0.5);
+            ix = DesktopIconsUtil.clamp(ix, 0, this._innerWidth - this._elementWidth);
+            iy = DesktopIconsUtil.clamp(iy, 0, this._innerHeight - this._elementHeight);
+            x = ix + this._marginLeft;
+            y = iy + this._marginTop;
             if (globalCoordinates) {
                 [x, y] = this._coordinatesLocalToGlobal(x, y);
             }
@@ -407,8 +474,10 @@ var DesktopGrid = class {
     _getEmptyPlaceClosestTo(x, y, coordinatesAction, reverseHorizontal) {
 
         [x, y] = this._coordinatesGlobalToLocal(x, y);
-        let placeX = Math.floor(x / this._elementWidth);
-        let placeY = Math.floor(y / this._elementHeight);
+        let ix = DesktopIconsUtil.clamp(x - this._marginLeft, 0, this._innerWidth - 1);
+        let iy = DesktopIconsUtil.clamp(y - this._marginTop, 0, this._innerHeight - 1);
+        let placeX = Math.floor(ix / this._elementWidth);
+        let placeY = Math.floor(iy / this._elementHeight);
 
         let cornerInversion = Prefs.get_start_corner();
         if (reverseHorizontal) {
